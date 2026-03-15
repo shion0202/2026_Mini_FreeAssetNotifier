@@ -11,8 +11,8 @@
 
 **[config.txt 작성 예시]**
 ```text
-[https://discord.com/api/webhooks/123456789/Your_Webhook_URL_1](https://discord.com/api/webhooks/123456789/Your_Webhook_URL_1)
-[https://discord.com/api/webhooks/987654321/Your_Webhook_URL_2](https://discord.com/api/webhooks/987654321/Your_Webhook_URL_2)
+https://discord.com/api/webhooks/123456789/Your_Webhook_URL_1
+https://discord.com/api/webhooks/987654321/Your_Webhook_URL_2
 ```
 
 ### 프로젝트 소개
