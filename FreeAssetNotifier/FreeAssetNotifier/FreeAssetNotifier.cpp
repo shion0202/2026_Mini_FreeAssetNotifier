@@ -3,19 +3,22 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <map>
 #include <regex>
 #include <functional>
+#include <iomanip>
 #include "nlohmann/json.hpp"
 
 using namespace std;
 using json = nlohmann::json;
 
 struct AssetInfo {
-    string storeName;
     string name;
-    string link;
+    string storeName;
     string coupon;
+    string link;
     string imageUrl;
+    string endDate;
 };
 
 // 스토어별 설정을 관리하는 구조체
@@ -80,6 +83,7 @@ void SendDiscordNotification(const vector<string>& webhookUrls, const AssetInfo&
 
         embed["fields"] = json::array({
             { {"name", "🎁 쿠폰 코드"}, {"value", "`" + info.coupon + "`"}, {"inline", true} },
+            { {"name", "⏰ 종료 예정일"}, {"value", info.endDate}, {"inline", false} },
             { {"name", "🛒 스토어"}, {"value", info.storeName}, {"inline", true} }
             });
 
@@ -108,6 +112,73 @@ void SendDiscordNotification(const vector<string>& webhookUrls, const AssetInfo&
         // 에러 발생 시 프로그램 종료 대신 메시지만 출력
         cout << " - [Critical Error] JSON Process: " << e.what() << endl;
     }
+}
+
+string ConvertUnityDate(string rawDate) {
+    // "end " 이후의 텍스트만 추출 (예: "March 19, 2026 at 7:59am PT.")
+    size_t startPos = rawDate.find("end ");
+    if (startPos == string::npos) return rawDate;
+    string target = rawDate.substr(startPos + 4);
+
+    // 월 이름 매핑 테이블
+    map<string, string> months = {
+        {"January", "01"}, {"February", "02"}, {"March", "03"}, {"April", "04"},
+        {"May", "05"}, {"June", "06"}, {"July", "07"}, {"August", "08"},
+        {"September", "09"}, {"October", "10"}, {"November", "11"}, {"December", "12"}
+    };
+
+    try {
+        stringstream ss(target);
+        string monthName, dayStr, yearStr;
+
+        // "March 19, 2026" 순서로 읽기
+        ss >> monthName >> dayStr >> yearStr;
+
+        // 쉼표(,) 제거
+        if (!dayStr.empty() && dayStr.back() == ',') dayStr.pop_back();
+        if (!yearStr.empty() && yearStr.back() == '.') yearStr.pop_back();
+
+        // 한 자리 숫자 날짜 앞에 0 붙이기 (예: 9 -> 09)
+        if (dayStr.length() == 1) dayStr = "0" + dayStr;
+
+        // 최종 변환: YYYY/MM/DD
+        if (months.count(monthName)) {
+            return yearStr + "/" + months[monthName] + "/" + dayStr;
+        }
+    }
+    catch (...) {
+        return rawDate; // 변환 실패 시 원본 반환
+    }
+    return rawDate;
+}
+
+string ConvertFabDate(string rawDate) {
+    // 예: "기간 한정 무료 (3월 24일 오후 10시 59분까지)"
+    try {
+        size_t start = rawDate.find("(");
+        size_t end = rawDate.find(")");
+        if (start == string::npos || end == string::npos) return rawDate;
+
+        string target = rawDate.substr(start + 1, end - start - 1); // "3월 24일 ..."
+
+        // 현재 연도 구하기 (Fab은 연도가 안 나오므로 현재 연도 기준)
+        time_t t = time(NULL);
+        struct tm tm;
+        localtime_s(&tm, &t);
+        int currentYear = tm.tm_year + 1900;
+
+        int month, day;
+        // "3월 24일" 패턴 추출
+        if (sscanf_s(target.c_str(), "%d월 %d일", &month, &day) == 2) {
+            stringstream ss;
+            ss << currentYear << "/" << setfill('0') << setw(2) << month << "/" << setw(2) << day;
+            return ss.str(); // 결과: 2026/03/24
+        }
+    }
+    catch (...) {
+        return rawDate;
+    }
+    return rawDate;
 }
 
 // HTML에서 에셋 이름, 링크, 쿠폰 코드를 추출하는 함수
@@ -197,6 +268,18 @@ AssetInfo ParseUnityAsset(const string& filename) {
 
     if (!found) cout << "Asset Image not found in the target section." << endl;
 
+    // 유니티 HTML에서 기간 텍스트 추출 부분
+    // p class="truncate text-sm" 타겟팅
+    size_t datePos = content.find("p class=\"truncate text-sm\">");
+    if (datePos != string::npos) {
+        size_t start = content.find(">", datePos) + 1;
+        size_t end = content.find("</p>", start);
+        string rawDateText = content.substr(start, end - start);
+
+        // 변환 함수 호출 (예: 2026/03/19)
+        info.endDate = ConvertUnityDate(rawDateText);
+    }
+
     return info;
 }
 
@@ -210,24 +293,29 @@ AssetInfo ParseFabAsset(const string& filename) {
 
     ifstream resFile("temp_fab.txt");
     if (resFile.is_open()) {
-        string nameLine, imgLine;
+        string nameLine, imgLine, dateLine;
 
-        // 첫 번째 줄: 에셋 이름
+        // 에셋 이름
         if (getline(resFile, nameLine)) {
-            // BOM 제거 로직 (생략 가능하나 안전을 위해 유지)
             if (nameLine.size() >= 3 && (unsigned char)nameLine[0] == 0xEF) nameLine.erase(0, 3);
             info.name = nameLine;
         }
 
-        // 두 번째 줄: 이미지 URL
+        // 이미지 URL
         if (getline(resFile, imgLine)) {
             info.imageUrl = imgLine;
+        }
+
+        // 종료 날짜 (추가됨)
+        if (getline(resFile, dateLine)) {
+            info.endDate = ConvertFabDate(dateLine); // 정제 후 저장
         }
 
         resFile.close();
         if (info.name.find("ERROR") == string::npos) {
             cout << " - [Success] Captured Asset: " << info.name << endl;
             if (!info.imageUrl.empty()) cout << " - [Success] Image URL found." << endl;
+            if (!info.endDate.empty()) cout << " - [Success] End Date: " << info.endDate << endl;
         }
         remove("temp_fab.txt");
     }

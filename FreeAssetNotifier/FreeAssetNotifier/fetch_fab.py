@@ -1,6 +1,5 @@
-# fetch_fab.py
+# -*- coding: utf-8-sig -*-
 from DrissionPage import ChromiumPage, ChromiumOptions
-import sys
 import os
 import time
 
@@ -8,7 +7,9 @@ def fetch_fab_info():
     co = ChromiumOptions()
     co.set_argument('--headless')
     co.set_argument('--no-sandbox')
+    co.set_argument('--disable-gpu')
     co.set_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36')
+    co.set_argument('--log-level=3')
 
     user_home = os.path.expanduser("~")
     whale_paths = [
@@ -17,34 +18,51 @@ def fetch_fab_info():
         r'C:\Program Files (x86)\Naver\Naver Whale\Application\whale.exe'
     ]
     found_path = next((p for p in whale_paths if os.path.exists(p)), None)
-    if found_path: co.set_browser_path(found_path)
-    else: return
+    
+    if found_path:
+        co.set_browser_path(found_path)
+    else:
+        with open("temp_fab.txt", "w", encoding="utf-8-sig") as f:
+            f.write("ERROR: Browser not found.")
+        return
 
     page = None
     try:
         page = ChromiumPage(co)
         page.get('https://www.fab.com/ko/limited-time-free')
-        time.sleep(10) 
 
-        # 1. 첫 번째 에셋 이름 추출
-        title_element = page.ele('css:div.fabkit-Typography-ellipsisWrapper', timeout=10)
+        # --- 수정된 조건부 대기 로직 ---
+        # 1. 에셋 제목 클래스가 로드될 때까지 최대 15초 대기
+        target_css = 'css:div.fabkit-Typography-ellipsisWrapper'
         
-        # 2. 첫 번째 에셋 이미지 URL 추출
-        img_element = page.ele('css:div.fabkit-Thumbnail-root img', timeout=10)
-        
-        asset_name = title_element.text.strip() if title_element else "Unknown Asset"
-        # 이미지 태그의 src 속성 가져오기
-        img_url = img_element.attr('src') if img_element else ""
+        # ele_display 대신 wait 메서드를 사용하여 해당 요소가 나타날 때까지 기다립니다.
+        if page.ele(target_css, timeout=15):
+            # 요소가 발견되면 안전하게 1초만 더 쉬어줍니다.
+            time.sleep(1)
 
-        # 두 정보를 줄바꿈으로 구분하여 저장
-        with open("temp_fab.txt", "w", encoding="utf-8-sig") as f:
-            f.write(f"{asset_name}\n{img_url}")
-            
+            # 데이터 추출
+            title_el = page.ele(target_css)
+            asset_name = title_el.text.strip() if title_el else "Unknown Asset"
+
+            img_el = page.ele('css:div.fabkit-Thumbnail-root img')
+            img_url = img_el.attr('src') if img_el else ""
+
+            # 상단에 크게 적힌 기간 텍스트 추출
+            time_el = page.ele('t:h2@@text():기간 한정 무료')
+            full_time_text = time_el.text.strip() if time_el else "정보 없음"
+
+            with open("temp_fab.txt", "w", encoding="utf-8-sig") as f:
+                f.write(f"{asset_name}\n{img_url}\n{full_time_text}")
+        else:
+            with open("temp_fab.txt", "w", encoding="utf-8-sig") as f:
+                f.write("ERROR: Page elements not found within timeout.")
+
     except Exception as e:
         with open("temp_fab.txt", "w", encoding="utf-8-sig") as f:
             f.write(f"ERROR: {str(e)}")
     finally:
-        if page: page.quit()
+        if page:
+            page.quit()
 
 if __name__ == "__main__":
     fetch_fab_info()
