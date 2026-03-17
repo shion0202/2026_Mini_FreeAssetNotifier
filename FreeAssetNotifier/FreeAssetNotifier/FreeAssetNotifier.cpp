@@ -1,18 +1,33 @@
 ﻿#include <iostream>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <regex>
-#include <fstream>
+#include <functional>
 #include "nlohmann/json.hpp"
 
 using namespace std;
 using json = nlohmann::json;
 
 struct AssetInfo {
+    string storeName;
     string name;
     string link;
     string coupon;
     string imageUrl;
+};
+
+// 스토어별 설정을 관리하는 구조체
+struct StoreConfig {
+    string storeName;
+    string url;
+    string tempFile;
+    string cacheFile; // 스토어별 캐시 파일 (예: last_unity.txt, last_fab.txt)
+
+    // 파싱 함수를 담는 변수 (함수 포인터 역할)
+    // string(파일명)을 받아서 AssetInfo를 반환하는 함수 형태
+    function<AssetInfo(const string&)> parseFunc;
 };
 
 // config.txt에서 여러 개의 웹훅 URL을 읽어오는 함수
@@ -40,20 +55,71 @@ vector<string> LoadWebhookUrls(const string& filename) {
 
 // 페이지 소스 다운로드 (Windows 내장 curl 사용)
 bool DownloadPageSource(const string& url, const string& filename) {
-    string command = "curl -s -L -A \"Mozilla/5.0\" \"" + url + "\" -o " + filename;
+    // 헤더를 너무 많이 넣기보다, 가장 일반적인 크롬 브라우저 정보 하나만 사용해봅니다.
+    string command = "curl -s -L -k "; // -k는 SSL 인증서 무시 (혹시 모를 에러 방지)
+    command += "-A \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\" ";
+    command += "\"" + url + "\" -o " + filename;
+
     int result = system(command.c_str());
     return (result == 0);
+}
+
+// 디스코드 웹훅 전송 (curl 사용)
+void SendDiscordNotification(const vector<string>& webhookUrls, const AssetInfo& info) {
+    if (info.name.empty()) return;
+
+    try {
+        json payload;
+        payload["content"] = "🔔 **새로운 무료 에셋!**";
+
+        json embed = json::object();
+        embed["title"] = info.name;
+        embed["url"] = info.link;
+        // Fab 스토어 감지 로직 보완
+        embed["color"] = (info.storeName.find("Fab") != string::npos) ? 3066993 : 2236962;
+
+        embed["fields"] = json::array({
+            { {"name", "🎁 쿠폰 코드"}, {"value", "`" + info.coupon + "`"}, {"inline", true} },
+            { {"name", "🛒 스토어"}, {"value", info.storeName}, {"inline", true} }
+            });
+
+        if (!info.imageUrl.empty()) embed["image"] = { {"url", info.imageUrl} };
+        payload["embeds"] = json::array({ embed });
+
+        string tempJsonFile = "temp_payload.json";
+
+        // JSON 생성 시 인코딩 예외를 방지하기 위한 dump 설정
+        // 유효하지 않은 UTF-8 문자가 있어도 프로그램이 중단되지 않게 합니다.
+        string jsonString = payload.dump(-1, ' ', false, json::error_handler_t::replace);
+
+        ofstream o(tempJsonFile);
+        if (o.is_open()) {
+            o << jsonString;
+            o.close();
+
+            for (const string& url : webhookUrls) {
+                string command = "curl -s -H \"Content-Type: application/json\" -X POST -d @\"" + tempJsonFile + "\" \"" + url + "\"";
+                system(command.c_str());
+            }
+        }
+        remove(tempJsonFile.c_str());
+    }
+    catch (const exception& e) {
+        // 에러 발생 시 프로그램 종료 대신 메시지만 출력
+        cout << " - [Critical Error] JSON Process: " << e.what() << endl;
+    }
 }
 
 // HTML에서 에셋 이름, 링크, 쿠폰 코드를 추출하는 함수
 AssetInfo ParseUnityAsset(const string& filename) {
     ifstream file(filename);
     if (!file.is_open()) return {};
-
     string content((istreambuf_iterator<char>(file)), istreambuf_iterator<char>());
     file.close();
 
     AssetInfo info;
+    info.storeName = "Unity Asset Store";
+
     // 기준점이 되는 문구 찾기
     string anchor = "ASSET GIVEAWAY";
     size_t anchorPos = content.find(anchor);
@@ -134,95 +200,124 @@ AssetInfo ParseUnityAsset(const string& filename) {
     return info;
 }
 
-// 디스코드 웹훅 전송 (curl 사용)
-void SendDiscordNotification(const string& webhookUrl, const AssetInfo& info) {
-    if (webhookUrl.empty()) return;
+AssetInfo ParseFabAsset(const string& filename) {
+    AssetInfo info;
+    info.storeName = "Fab Store";
+    info.coupon = "N/A";
+    info.link = "https://www.fab.com/ko/limited-time-free";
 
-    try {
-        json payload;
-        payload["content"] = "🔔 **새로운 기간 한정 무료 에셋**";
+    system("python fetch_fab.py");
 
-        json embed = json::object();
-        embed["title"] = info.name;
-        embed["url"] = info.link;
-        embed["color"] = 2236962;
+    ifstream resFile("temp_fab.txt");
+    if (resFile.is_open()) {
+        string nameLine, imgLine;
 
-        embed["fields"] = json::array({
-            { {"name", "🎁 쿠폰 코드"}, {"value", "`" + info.coupon + "`"}, {"inline", true} },
-            { {"name", "🛒 스토어"}, {"value", "Unity Asset Store"}, {"inline", true} }
-            });
-
-        if (!info.imageUrl.empty()) {
-            embed["image"] = { {"url", info.imageUrl} };
+        // 첫 번째 줄: 에셋 이름
+        if (getline(resFile, nameLine)) {
+            // BOM 제거 로직 (생략 가능하나 안전을 위해 유지)
+            if (nameLine.size() >= 3 && (unsigned char)nameLine[0] == 0xEF) nameLine.erase(0, 3);
+            info.name = nameLine;
         }
 
-        payload["embeds"] = json::array({ embed });
-
-        string tempJsonFile = "temp_payload.json";
-        ofstream o(tempJsonFile);
-        if (o.is_open()) {
-            o << payload.dump(-1, ' ', false, json::error_handler_t::replace);
-            o.close();
-
-            string command = "curl -s -H \"Content-Type: application/json\" -X POST -d @\"" + tempJsonFile + "\" " + webhookUrl;
-            system(command.c_str());
-
-            remove(tempJsonFile.c_str());
+        // 두 번째 줄: 이미지 URL
+        if (getline(resFile, imgLine)) {
+            info.imageUrl = imgLine;
         }
+
+        resFile.close();
+        if (info.name.find("ERROR") == string::npos) {
+            cout << " - [Success] Captured Asset: " << info.name << endl;
+            if (!info.imageUrl.empty()) cout << " - [Success] Image URL found." << endl;
+        }
+        remove("temp_fab.txt");
     }
-    catch (const json::exception& e) {
-        cerr << "[JSON Error] " << e.what() << endl;
-    }
+    return info;
 }
 
 int main() {
     const string configFileName = "config.txt";
-    const string cacheFileName = "last_asset.txt";
-    const string tempFileName = "unity_source.html";
-    const string unityUrl = "https://assetstore.unity.com/ko-KR/publisher-sale";
 
-    // 웹훅 URL 리스트 로드
+    // 웹훅 URL 로드
     vector<string> webhookUrls = LoadWebhookUrls(configFileName);
     if (webhookUrls.empty()) {
         cout << "[Error] No Webhook URLs found in " << configFileName << endl;
         return 1;
     }
 
-    cout << "Checking for updates..." << endl;
+    // 모든 스토어의 파싱 규칙과 캐시 파일을 정의
+    vector<StoreConfig> stores = {
+        {
+            "Unity Asset Store",
+            "https://assetstore.unity.com/ko-KR/publisher-sale",
+            "unity_source.html",
+            "last_unity.txt",
+            ParseUnityAsset
+        },
+        {
+            "Fab",
+            "https://www.fab.com/ko/limited-time-free",
+            "fab_source.html",
+            "last_fab.txt",
+            ParseFabAsset
+        }
+    };
 
-    if (DownloadPageSource(unityUrl, tempFileName)) {
-        AssetInfo current = ParseUnityAsset(tempFileName);
+    for (const auto& store : stores) {
+        cout << "[" << store.storeName << "] Checking for updates..." << endl;
 
-        if (current.name.empty()) {
-            cout << "[Error] Could not find asset info." << endl;
-            return 1;
+        AssetInfo current;
+        bool downloadSuccess = true;
+
+        // Fab Store는 파이썬 헬퍼가 직접 처리하므로 C++ 다운로드 과정을 건너뜁니다.
+        if (store.storeName == "Fab") {
+            current = store.parseFunc("");
+        }
+        else {
+            // 유니티 등 일반 스토어는 기존처럼 다운로드 후 파싱
+            if (DownloadPageSource(store.url, store.tempFile)) {
+                current = store.parseFunc(store.tempFile);
+            }
+            else {
+                downloadSuccess = false;
+            }
         }
 
+        if (!downloadSuccess) {
+            cout << " - [Error] Failed to download page source for " << store.storeName << endl;
+            continue;
+        }
+
+        if (current.name.empty()) {
+            cout << " - [Error] Could not find asset info." << endl;
+            continue;
+        }
+
+        // 해당 스토어 전용 캐시 파일 읽기
         string lastAssetName = "";
-        ifstream fin(cacheFileName);
+        ifstream fin(store.cacheFile);
         if (fin.is_open()) {
             getline(fin, lastAssetName);
             fin.close();
         }
 
-        // 새로운 에셋 발견 시 모든 웹훅으로 전송
+        // 중복 확인 및 전송
         if (current.name != lastAssetName) {
-            cout << "New Asset: " << current.name << " (Coupon: " << current.coupon << ")" << endl;
+            cout << " - New Asset Detected: " << current.name << endl;
+            current.storeName = store.storeName;
 
-            for (const string& url : webhookUrls) {
-                cout << "Sending notification to a channel..." << endl;
-                SendDiscordNotification(url, current);
-            }
+            cout << " - Sending notifications..." << endl;
+            SendDiscordNotification(webhookUrls, current);
 
-            ofstream fout(cacheFileName);
+            // 해당 스토어 전용 캐시 업데이트
+            ofstream fout(store.cacheFile);
             if (fout.is_open()) {
                 fout << current.name;
                 fout.close();
             }
-            cout << "All notifications sent successfully." << endl;
+            cout << " - Successfully updated cache and sent notifications." << endl;
         }
         else {
-            cout << "No updates. (Current: " << lastAssetName << ")" << endl;
+            cout << " - Up to date. (Current: " << lastAssetName << ")" << endl;
         }
     }
 
