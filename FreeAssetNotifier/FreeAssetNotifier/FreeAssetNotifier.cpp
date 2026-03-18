@@ -317,7 +317,7 @@ AssetInfo ParseUnityAsset(const string& filename) {
 
 AssetInfo ParseFabAsset(const string& filename) {
     AssetInfo info;
-    info.storeName = "Fab Store";
+    info.storeName = "Fab";
     info.coupon = "N/A";
     info.link = "https://www.fab.com/ko/limited-time-free";
 
