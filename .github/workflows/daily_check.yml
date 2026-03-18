@@ -1,3 +1,7 @@
+# GitHub Actions에게 리포지토리 쓰기 권한을 부여합니다 (캐시 파일 업데이트용)
+permissions:
+  contents: write
+
 name: Daily Asset Update Check
 
 on:
@@ -13,6 +17,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # 변경사항을 다시 Push하기 위해 전체 히스토리를 가져옵니다.
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -37,7 +44,7 @@ jobs:
       - name: Build C++ Application
         run: |
           cd FreeAssetNotifier/FreeAssetNotifier
-          # /utf-8 옵션을 추가하여 한글 깨짐 방지
+          # /utf-8 옵션으로 한글 깨짐 방지
           cl.exe /EHsc /std:c++17 /utf-8 FreeAssetNotifier.cpp /Fe:asset_checker.exe
 
       - name: Run Application
@@ -50,7 +57,9 @@ jobs:
           cd FreeAssetNotifier/FreeAssetNotifier
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          # 캐시 파일(이미 받은 에셋 기록) 업데이트
+          
+          # 캐시 파일이 실제로 생성/변경되었는지 확인 후 스테이징
           git add last_unity.txt last_fab.txt
-          # 변경사항이 있을 때만 커밋 및 푸시 (중복 알림 방지)
-          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: update asset cache" && git push)
+          
+          # 변경사항이 있는 경우에만 커밋 및 푸시 진행
+          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: update asset cache [skip ci]" && git push)
