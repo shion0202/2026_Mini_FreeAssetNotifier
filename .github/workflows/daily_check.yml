@@ -1,3 +1,4 @@
+# GitHub Actions에게 리포지토리 쓰기 권한을 부여합니다.
 permissions:
   contents: write
 
@@ -5,8 +6,9 @@ name: Daily Asset Update Check
 
 on:
   schedule:
+    # 매일 한국 시간(KST) 오전 9시에 실행 (UTC 00:00)
     - cron: '0 0 * * *'
-  workflow_dispatch:
+  workflow_dispatch: # 수동 실행 버튼 활성화
 
 jobs:
   build-and-run:
@@ -34,12 +36,14 @@ jobs:
           echo "${{ secrets.DISCORD_BOT_TOKEN }}" > config.txt
           echo "${{ secrets.DISCORD_CHANNEL_ID }}" >> config.txt
 
+      # C++ 빌드를 위한 MSVC 환경 활성화
       - name: Setup MSVC Developer Command Prompt
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Build C++ Application
         run: |
           cd FreeAssetNotifier/FreeAssetNotifier
+          # /utf-8 옵션으로 한글 깨짐 방지
           cl.exe /EHsc /std:c++17 /utf-8 FreeAssetNotifier.cpp /Fe:asset_checker.exe
 
       - name: Run Application
@@ -48,22 +52,37 @@ jobs:
           ./asset_checker.exe
 
       - name: Commit and Push Changes
+        shell: bash
         run: |
-          # 루트가 아닌 파일이 실제 위치한 곳에서 작업
+          # 1. 파일이 위치한 폴더로 이동
           cd FreeAssetNotifier/FreeAssetNotifier
+          
+          # 2. Git 유저 설정
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # 파일 추가 (존재하지 않을 경우를 대비해 에러 무시)
-          git add last_unity.txt last_fab.txt 2>/dev/null || true
+          # 3. [디버깅] 현재 폴더에 어떤 파일들이 있는지 출력 (로그에서 확인 가능)
+          echo "--- Current Directory File List ---"
+          ls -R
+          echo "-----------------------------------"
           
-          # 변경 사항 확인 후 커밋
-          # 'nothing to commit' 에러를 방지하기 위해 if 문 사용
-          if [ -n "$(git status --porcelain)" ]; then
+          # 4. 파일이 존재할 때만 git add 수행
+          if [ -f "last_unity.txt" ]; then 
+            git add last_unity.txt
+            echo "Added last_unity.txt to staging."
+          fi
+          
+          if [ -f "last_fab.txt" ]; then 
+            git add last_fab.txt
+            echo "Added last_fab.txt to staging."
+          fi
+          
+          # 5. 스테이징된 변경 사항이 있는지 확인 후 커밋/푸시
+          # git diff --cached --quiet는 변경사항이 없으면 0을 반환함
+          if git diff --cached --quiet; then
+            echo "No changes detected in cache files. Skipping push."
+          else
             git commit -m "chore: update asset cache [skip ci]"
             git push origin main
-            echo "Changes pushed to repository."
-          else
-            echo "No changes detected. Skipping push."
+            echo "Successfully pushed changes to repository."
           fi
-        shell: bash
