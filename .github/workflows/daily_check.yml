@@ -2,8 +2,9 @@ name: Daily Asset Update Check
 
 on:
   schedule:
+    # 매일 한국 시간(KST) 오전 9시에 실행 (UTC 00:00)
     - cron: '0 0 * * *'
-  workflow_dispatch:
+  workflow_dispatch: # 수동 실행 버튼 활성화
 
 jobs:
   build-and-run:
@@ -29,15 +30,15 @@ jobs:
           echo "${{ secrets.DISCORD_BOT_TOKEN }}" > config.txt
           echo "${{ secrets.DISCORD_CHANNEL_ID }}" >> config.txt
 
-      # [중요] C++ 빌드를 위해 컴파일러 환경을 활성화합니다.
+      # C++ 빌드를 위한 MSVC 환경 활성화
       - name: Setup MSVC Developer Command Prompt
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Build C++ Application
         run: |
-        cd FreeAssetNotifier/FreeAssetNotifier
-        # /utf-8 옵션을 추가합니다.
-        cl.exe /EHsc /std:c++17 /utf-8 FreeAssetNotifier.cpp /Fe:asset_checker.exe
+          cd FreeAssetNotifier/FreeAssetNotifier
+          # /utf-8 옵션을 추가하여 한글 깨짐 방지
+          cl.exe /EHsc /std:c++17 /utf-8 FreeAssetNotifier.cpp /Fe:asset_checker.exe
 
       - name: Run Application
         run: |
@@ -49,5 +50,7 @@ jobs:
           cd FreeAssetNotifier/FreeAssetNotifier
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          # 캐시 파일(이미 받은 에셋 기록) 업데이트
           git add last_unity.txt last_fab.txt
+          # 변경사항이 있을 때만 커밋 및 푸시 (중복 알림 방지)
           git diff --quiet && git diff --staged --quiet || (git commit -m "chore: update asset cache" && git push)
