@@ -25,21 +25,22 @@ jobs:
       - name: Create Config File from Secrets
         shell: bash
         run: |
-          # .cpp 파일이 있는 폴더로 이동
           cd FreeAssetNotifier/FreeAssetNotifier
           echo "${{ secrets.DISCORD_BOT_TOKEN }}" > config.txt
           echo "${{ secrets.DISCORD_CHANNEL_ID }}" >> config.txt
 
+      # [중요] C++ 빌드를 위해 컴파일러 환경을 활성화합니다.
+      - name: Setup MSVC Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Build C++ Application
         run: |
           cd FreeAssetNotifier/FreeAssetNotifier
-          # 파일 이름이 FreeAssetNotifier.cpp 이므로 이에 맞춰 빌드
           cl.exe /EHsc /std:c++17 FreeAssetNotifier.cpp /Fe:asset_checker.exe
 
       - name: Run Application
         run: |
           cd FreeAssetNotifier/FreeAssetNotifier
-          # 실행
           ./asset_checker.exe
 
       - name: Commit and Push Changes
@@ -47,7 +48,5 @@ jobs:
           cd FreeAssetNotifier/FreeAssetNotifier
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          # 변경된 캐시 파일 스테이징
           git add last_unity.txt last_fab.txt
-          # 변경사항이 있을 때만 커밋 및 푸시
           git diff --quiet && git diff --staged --quiet || (git commit -m "chore: update asset cache" && git push)
