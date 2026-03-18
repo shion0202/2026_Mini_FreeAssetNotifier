@@ -2,13 +2,12 @@ name: Daily Asset Update Check
 
 on:
   schedule:
-    # 매일 한국 시간(KST) 오전 9시에 실행 (UTC 기준 00:00)
     - cron: '0 0 * * *'
-  workflow_dispatch: # 수동으로도 실행 가능하게 설정
+  workflow_dispatch:
 
 jobs:
   build-and-run:
-    runs-on: windows-latest # C++(MSVC)와 브라우저 환경을 위해 윈도우 사용
+    runs-on: windows-latest
 
     steps:
       - name: Checkout code
@@ -26,21 +25,29 @@ jobs:
       - name: Create Config File from Secrets
         shell: bash
         run: |
+          # .cpp 파일이 있는 폴더로 이동
+          cd FreeAssetNotifier/FreeAssetNotifier
           echo "${{ secrets.DISCORD_BOT_TOKEN }}" > config.txt
           echo "${{ secrets.DISCORD_CHANNEL_ID }}" >> config.txt
 
       - name: Build C++ Application
         run: |
-          # nlohmann/json이 프로젝트 폴더 내에 있다고 가정 (헤더파일 경로 확인 필요)
-          cl.exe /EHsc /std:c++17 main.cpp /Fe:asset_checker.exe
+          cd FreeAssetNotifier/FreeAssetNotifier
+          # 파일 이름이 FreeAssetNotifier.cpp 이므로 이에 맞춰 빌드
+          cl.exe /EHsc /std:c++17 FreeAssetNotifier.cpp /Fe:asset_checker.exe
 
       - name: Run Application
         run: |
+          cd FreeAssetNotifier/FreeAssetNotifier
+          # 실행
           ./asset_checker.exe
 
-      - name: Commit and Push Changes (Cache update)
+      - name: Commit and Push Changes
         run: |
+          cd FreeAssetNotifier/FreeAssetNotifier
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          # 변경된 캐시 파일 스테이징
           git add last_unity.txt last_fab.txt
+          # 변경사항이 있을 때만 커밋 및 푸시
           git diff --quiet && git diff --staged --quiet || (git commit -m "chore: update asset cache" && git push)
