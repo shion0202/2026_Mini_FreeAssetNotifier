@@ -417,8 +417,5 @@ FodyWeavers.xsd
 *.msm
 *.msp
 
-config.txt
-last_fab.txt
-last_unity.txt
 unity_source.html
 fab_source.html
