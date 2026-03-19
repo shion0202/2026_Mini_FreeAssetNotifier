@@ -29,12 +29,21 @@ jobs:
         run: |
           pip install DrissionPage
 
+      # [수정] config.txt 생성 및 경로 확인 강화
       - name: Create Config File from Secrets
         shell: bash
         run: |
           cd FreeAssetNotifier/FreeAssetNotifier
+          # 봇 토큰과 채널 ID를 config.txt에 저장
           echo "${{ secrets.DISCORD_BOT_TOKEN }}" > config.txt
           echo "${{ secrets.DISCORD_CHANNEL_ID }}" >> config.txt
+          
+          # [디버깅] 파일이 잘 생성되었는지 크기 확인
+          echo "Checking config.txt in current directory..."
+          ls -l config.txt
+          
+          # 혹시 모를 경로 오류를 대비해 상위 폴더에도 복사
+          cp config.txt ../../config.txt
 
       # C++ 빌드를 위한 MSVC 환경 활성화
       - name: Setup MSVC Developer Command Prompt
@@ -46,39 +55,29 @@ jobs:
           # /utf-8 옵션으로 한글 깨짐 방지
           cl.exe /EHsc /std:c++17 /utf-8 FreeAssetNotifier.cpp /Fe:asset_checker.exe
 
+      # [수정] 실행 전 파일 존재 여부 최종 확인
       - name: Run Application
+        shell: bash
         run: |
           cd FreeAssetNotifier/FreeAssetNotifier
+          echo "Current Path: $(pwd)"
+          if [ -f "config.txt" ]; then 
+            echo "Config file found! Running application..."
+          else 
+            echo "CRITICAL: Config file MISSING!"
+          fi
           ./asset_checker.exe
 
       - name: Commit and Push Changes
         shell: bash
         run: |
-          # 1. 파일이 위치한 폴더로 이동
           cd FreeAssetNotifier/FreeAssetNotifier
-          
-          # 2. Git 유저 설정
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # 3. [디버깅] 현재 폴더에 어떤 파일들이 있는지 출력 (로그에서 확인 가능)
-          echo "--- Current Directory File List ---"
-          ls -R
-          echo "-----------------------------------"
+          # 캐시 파일 강제 추가 (gitignore 무시)
+          git add -f last_unity.txt last_fab.txt 2>/dev/null || true
           
-          # 4. 파일이 존재할 때만 git add 수행
-          if [ -f "last_unity.txt" ]; then 
-            git add last_unity.txt
-            echo "Added last_unity.txt to staging."
-          fi
-          
-          if [ -f "last_fab.txt" ]; then 
-            git add last_fab.txt
-            echo "Added last_fab.txt to staging."
-          fi
-          
-          # 5. 스테이징된 변경 사항이 있는지 확인 후 커밋/푸시
-          # git diff --cached --quiet는 변경사항이 없으면 0을 반환함
           if git diff --cached --quiet; then
             echo "No changes detected in cache files. Skipping push."
           else
