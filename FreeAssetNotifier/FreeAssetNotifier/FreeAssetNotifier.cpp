@@ -104,6 +104,8 @@ bool DownloadPageSource(const string& url, const string& filename, string& diag)
     // 헤더를 너무 많이 넣기보다, 가장 일반적인 크롬 브라우저 정보 하나만 사용해봅니다.
     string command = "curl -s -L -k "; // -k는 SSL 인증서 무시 (혹시 모를 에러 방지)
     command += "-A \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\" ";
+    // 파싱이 영어 문구 기준이므로 영어 페이지를 요청 (ko-KR 페이지는 한국어로 번역되어 내려옴)
+    command += "-H \"Accept-Language: en-US,en;q=0.9\" ";
     command += "-w \"%{http_code} %{size_download}\" ";
     command += "\"" + url + "\" -o " + filename;
 
@@ -365,6 +367,17 @@ AssetInfo ParseUnityAsset(const string& filename) {
             reason += " (giveaway 관련 텍스트 없음 → 섹션 제거 또는 동적 로딩 추정)";
         }
         info.error = reason;
+
+        // 원인 분석용: 쿠폰 문구 주변 HTML을 로그에 출력 (Actions 로그에서 구조 확인 가능)
+        size_t hintPos = lowerContent.find("coupon code");
+        if (hintPos == string::npos) hintPos = content.find("쿠폰 코드");
+        if (hintPos != string::npos) {
+            size_t from = hintPos > 1500 ? hintPos - 1500 : 0;
+            cout << " - [Debug] HTML around coupon text:" << endl << content.substr(from, 2000) << endl;
+        }
+        else {
+            cout << " - [Debug] No coupon text found in HTML either." << endl;
+        }
         return info;
     }
 
@@ -401,6 +414,13 @@ AssetInfo ParseUnityAsset(const string& filename) {
 
     if (regex_search(searchStart, searchEnd, match, couponRegex)) {
         info.coupon = match[1].str();
+    }
+    else {
+        // 한국어 페이지 대비: "쿠폰 코드 XXXX"
+        regex couponRegexKo("쿠폰 코드\\s*([A-Z0-9]+)");
+        if (regex_search(searchStart, searchEnd, match, couponRegexKo)) {
+            info.coupon = match[1].str();
+        }
     }
 
     // 에셋 대표 이미지 URL 추출 (앵커보다 위쪽 섹션부터 검색)
@@ -522,7 +542,7 @@ int main() {
     configFile.close();
 
     vector<StoreConfig> stores = {
-        { "Unity Asset Store", "https://assetstore.unity.com/ko-KR/publisher-sale", "unity_source.html", "last_unity.txt", ParseUnityAsset },
+        { "Unity Asset Store", "https://assetstore.unity.com/publisher-sale", "unity_source.html", "last_unity.txt", ParseUnityAsset },
         { "Fab", "https://www.fab.com/ko/limited-time-free", "fab_source.html", "last_fab.txt", ParseFabAsset }
     };
 
