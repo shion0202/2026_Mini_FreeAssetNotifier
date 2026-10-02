@@ -3,6 +3,16 @@ from DrissionPage import ChromiumPage, ChromiumOptions
 import os
 import time
 
+# 실패 시 원인 분석용으로 현재 페이지 HTML을 저장 (GitHub Actions에서 artifact로 업로드됨)
+def save_debug_html(page):
+    if page is None:
+        return
+    try:
+        with open("fab_debug.html", "w", encoding="utf-8") as f:
+            f.write(page.html)
+    except Exception as e:
+        print(f"Failed to save debug html: {e}")
+
 def fetch_fab_info():
     co = ChromiumOptions()
     
@@ -60,10 +70,12 @@ def fetch_fab_info():
                 f.write(f"{asset_name}\n{img_url}\n{full_time_text}")
             print(f"Successfully fetched: {asset_name}")
         else:
+            save_debug_html(page)
             with open("temp_fab.txt", "w", encoding="utf-8-sig") as f:
-                f.write("ERROR: Page elements not found within timeout.")
+                f.write(f"ERROR: Page elements not found within timeout. (title: {page.title})")
 
     except Exception as e:
+        save_debug_html(page)
         with open("temp_fab.txt", "w", encoding="utf-8-sig") as f:
             f.write(f"ERROR: {str(e)}")
         print(f"Error occurred: {e}")

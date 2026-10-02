@@ -20,6 +20,10 @@ GitHub Actions를 통해 매일 정해진 시간에 서버에서 자동으로 �
 포크한 리포지토리의 Settings > Secrets and variables > Actions 메뉴에서 다음 두 항목을 추가합니다.
 - `DISCORD_BOT_TOKEN`: 메모한 디스코드 봇 토큰 입력
 - `DISCORD_CHANNEL_ID`: 알림을 받을 디스코드 채널 ID 입력
+- `DISCORD_STATUS_WEBHOOK` (선택): 매일 확인 결과(성공/실패 원인, HTTP 상태 등)를 받을 디스코드 웹훅 URL
+  - 디스코드 채널 설정 > 연동 > 웹후크에서 생성합니다. 공지 채널과 별도인 개인 채널을 권장합니다.
+  - 등록하지 않으면 상태 보고는 생략되고 기존 알림만 동작합니다.
+  - 확인에 실패한 날은 Actions 실행 화면 하단의 `debug-pages` artifact에서 당시 받은 페이지 HTML을 확인할 수 있습니다 (7일 보관).
 
 #### 4. 워크플로우 활성화 (Activation)
 - 상단 **Actions** 탭으로 이동하여 `I understand my workflows, go ahead and enable them` 버튼을 눌러 액션을 활성화합니다.

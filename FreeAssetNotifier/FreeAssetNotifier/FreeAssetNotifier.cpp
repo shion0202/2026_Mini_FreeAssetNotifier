@@ -23,6 +23,16 @@ struct AssetInfo {
     string link;
     string imageUrl;
     string endDate;
+    string error; // 파싱 실패 시 원인 (비어 있으면 성공)
+    string fetchInfo; // 다운로드 진단 정보 (HTTP 코드, 크기 등)
+};
+
+// 상태 보고용: 스토어별 오늘의 확인 결과
+struct StoreResult {
+    string storeName;
+    string status; // "NEW", "SAME", "FAIL"
+    string assetName;
+    string detail;
 };
 
 // 스토어별 설정을 관리하는 구조체
@@ -60,17 +70,6 @@ vector<string> LoadWebhookUrls(const string& filename) {
     return urls;
 }
 
-// 페이지 소스 다운로드 (Windows 내장 curl 사용)
-bool DownloadPageSource(const string& url, const string& filename) {
-    // 헤더를 너무 많이 넣기보다, 가장 일반적인 크롬 브라우저 정보 하나만 사용해봅니다.
-    string command = "curl -s -L -k "; // -k는 SSL 인증서 무시 (혹시 모를 에러 방지)
-    command += "-A \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\" ";
-    command += "\"" + url + "\" -o " + filename;
-
-    int result = system(command.c_str());
-    return (result == 0);
-}
-
 // curl의 실행 결과를 string으로 받아오기 위한 헬퍼 함수
 string exec(const char* cmd) {
     char buffer[128];
@@ -84,8 +83,117 @@ string exec(const char* cmd) {
     return result;
 }
 
-void SendAndPublishDiscord(const string& token, const string& channelId, const AssetInfo& info) {
-    if (info.name.empty()) return;
+string Trim(const string& s) {
+    size_t start = s.find_first_not_of(" \n\r\t");
+    if (start == string::npos) return "";
+    size_t end = s.find_last_not_of(" \n\r\t");
+    return s.substr(start, end - start + 1);
+}
+
+// ASCII 문자만 소문자로 변환 (UTF-8 멀티바이트는 그대로 두므로 위치가 원본과 일치)
+string ToLowerAscii(string s) {
+    for (char& c : s) {
+        if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';
+    }
+    return s;
+}
+
+// 페이지 소스 다운로드 (Windows 내장 curl 사용)
+// diag에는 HTTP 상태 코드와 다운로드 크기를 기록 (예: "HTTP 200, 512345 bytes")
+bool DownloadPageSource(const string& url, const string& filename, string& diag) {
+    // 헤더를 너무 많이 넣기보다, 가장 일반적인 크롬 브라우저 정보 하나만 사용해봅니다.
+    string command = "curl -s -L -k "; // -k는 SSL 인증서 무시 (혹시 모를 에러 방지)
+    command += "-A \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\" ";
+    command += "-w \"%{http_code} %{size_download}\" ";
+    command += "\"" + url + "\" -o " + filename;
+
+    string output = Trim(exec(command.c_str()));
+    int httpCode = 0;
+    long long size = 0;
+    stringstream ss(output);
+    ss >> httpCode >> size;
+
+    if (httpCode == 0) diag = "연결 실패 (HTTP 응답 없음)";
+    else diag = "HTTP " + to_string(httpCode) + ", " + to_string(size) + " bytes";
+    cout << " - Download: " << diag << endl;
+    return httpCode >= 200 && httpCode < 300 && size > 0;
+}
+
+// 한국 시간(KST) 기준 현재 시각 문자열
+string GetKstNow() {
+    time_t t = time(NULL) + 9 * 3600;
+    struct tm tm;
+    gmtime_s(&tm, &t);
+    stringstream ss;
+    ss << put_time(&tm, "%Y/%m/%d %H:%M") << " KST";
+    return ss.str();
+}
+
+// 상태 보고 웹훅으로 오늘의 확인 결과 전송 (공지 채널과 별개)
+void SendStatusReport(const string& webhookUrl, const vector<StoreResult>& results) {
+    if (webhookUrl.empty()) {
+        cout << "[Status] No status webhook configured. Skipping report." << endl;
+        return;
+    }
+
+    try {
+        bool anyFail = false;
+        json fields = json::array();
+        for (const auto& r : results) {
+            string icon = "✅ 변경 없음";
+            if (r.status == "NEW") icon = "🆕 새 에셋 알림 전송";
+            else if (r.status == "FAIL") { icon = "❌ 확인 실패"; anyFail = true; }
+
+            string value = icon;
+            if (!r.assetName.empty()) value += "\n에셋: " + r.assetName;
+            if (!r.detail.empty()) value += "\n" + r.detail;
+            if (value.size() > 1000) value = value.substr(0, 1000) + "...";
+
+            fields.push_back({ {"name", r.storeName}, {"value", value}, {"inline", false} });
+        }
+
+        json embed = json::object();
+        embed["title"] = anyFail ? "⚠️ 무료 에셋 확인 결과 (실패 있음)" : "📋 무료 에셋 확인 결과";
+        embed["description"] = GetKstNow();
+        embed["color"] = anyFail ? 15158332 : 3066993;
+        embed["fields"] = fields;
+
+        // GitHub Actions 실행 시 해당 실행 로그 링크를 제목에 연결
+        size_t len = 0;
+        char* serverUrl = nullptr;
+        char* repo = nullptr;
+        char* runId = nullptr;
+        _dupenv_s(&serverUrl, &len, "GITHUB_SERVER_URL");
+        _dupenv_s(&repo, &len, "GITHUB_REPOSITORY");
+        _dupenv_s(&runId, &len, "GITHUB_RUN_ID");
+        if (serverUrl && repo && runId) {
+            embed["url"] = string(serverUrl) + "/" + repo + "/actions/runs/" + runId;
+        }
+        free(serverUrl); free(repo); free(runId);
+
+        json payload;
+        payload["embeds"] = json::array({ embed });
+
+        string tempJsonFile = "temp_status.json";
+        ofstream o(tempJsonFile);
+        o << payload.dump(-1, ' ', false, json::error_handler_t::replace);
+        o.close();
+
+        string cmd = "curl -s -o nul -w \"%{http_code}\" -X POST \"" + webhookUrl + "\" "
+            "-H \"Content-Type: application/json\" "
+            "-d @\"" + tempJsonFile + "\"";
+        string code = Trim(exec(cmd.c_str()));
+        remove(tempJsonFile.c_str());
+
+        cout << "[Status] Report sent (HTTP " << code << ")" << endl;
+    }
+    catch (const exception& e) {
+        cout << "[Status] Failed to send report: " << e.what() << endl;
+    }
+}
+
+bool SendAndPublishDiscord(const string& token, const string& channelId, const AssetInfo& info) {
+    if (info.name.empty()) return false;
 
     try {
         // 1. 메시지 페이로드 생성
@@ -136,6 +244,7 @@ void SendAndPublishDiscord(const string& token, const string& channelId, const A
 
             exec(publishCmd.c_str());
             cout << " - Successfully published to followers!" << endl;
+            return true;
         }
         else {
             cout << " - [Error] Failed to get message ID. Response: " << response << endl;
@@ -144,6 +253,7 @@ void SendAndPublishDiscord(const string& token, const string& channelId, const A
     catch (const exception& e) {
         cout << " - [Critical Error] Discord Process: " << e.what() << endl;
     }
+    return false;
 }
 
 string ConvertUnityDate(string rawDate) {
@@ -215,13 +325,18 @@ string ConvertFabDate(string rawDate) {
 
 // HTML에서 에셋 이름, 링크, 쿠폰 코드를 추출하는 함수
 AssetInfo ParseUnityAsset(const string& filename) {
+    AssetInfo info;
+    info.storeName = "Unity Asset Store";
+
     ifstream file(filename);
-    if (!file.is_open()) return {};
+    if (!file.is_open()) {
+        info.error = "다운로드한 HTML 파일을 열 수 없음";
+        return info;
+    }
     string content((istreambuf_iterator<char>(file)), istreambuf_iterator<char>());
     file.close();
 
-    AssetInfo info;
-    info.storeName = "Unity Asset Store";
+    string lowerContent = ToLowerAscii(content);
 
     // 기준점이 되는 문구 찾기
     string anchor = "ASSET GIVEAWAY";
@@ -229,7 +344,28 @@ AssetInfo ParseUnityAsset(const string& filename) {
     if (anchorPos == string::npos) {
         anchor = "asset giveaway";
         anchorPos = content.find(anchor);
-        if (anchorPos == string::npos) return info;
+    }
+    if (anchorPos == string::npos) {
+        // "Asset Giveaway" 등 대소문자 표기가 바뀐 경우 대비
+        anchorPos = lowerContent.find("asset giveaway");
+        if (anchorPos != string::npos) cout << " - [Warn] Anchor found only by case-insensitive search." << endl;
+    }
+    if (anchorPos == string::npos) {
+        // 원인 추정: 봇 차단 페이지인지, 문구 자체가 사라진 것인지 구분
+        string reason = "'ASSET GIVEAWAY' 문구를 찾지 못함";
+        if (lowerContent.find("just a moment") != string::npos || lowerContent.find("cf-chl") != string::npos ||
+            lowerContent.find("captcha") != string::npos || lowerContent.find("access denied") != string::npos ||
+            lowerContent.find("_incapsula_") != string::npos) {
+            reason += " (봇 차단/챌린지 페이지로 추정)";
+        }
+        else if (lowerContent.find("giveaway") != string::npos) {
+            reason += " ('giveaway' 단어는 있음 → 문구 변경 추정)";
+        }
+        else {
+            reason += " (giveaway 관련 텍스트 없음 → 섹션 제거 또는 동적 로딩 추정)";
+        }
+        info.error = reason;
+        return info;
     }
 
     // 에셋 이름 추출 (<h2> 태그)
@@ -238,8 +374,12 @@ AssetInfo ParseUnityAsset(const string& filename) {
         size_t nameStart = content.find(">", h2Start) + 1;
         size_t h2End = content.find("</h2>", nameStart);
         if (h2End != string::npos) {
-            info.name = content.substr(nameStart, h2End - nameStart);
+            info.name = Trim(content.substr(nameStart, h2End - nameStart));
         }
+    }
+    if (info.name.empty()) {
+        info.error = "기준 문구는 찾았으나 그 뒤에서 에셋 이름(<h2>)을 찾지 못함";
+        return info;
     }
 
     // 에셋 페이지 링크 추출
@@ -344,24 +484,41 @@ AssetInfo ParseFabAsset(const string& filename) {
         }
 
         resFile.close();
-        if (info.name.find("ERROR") == string::npos) {
+        if (info.name.rfind("ERROR", 0) == 0) {
+            // fetch_fab.py가 실패 원인을 "ERROR: ..." 형태로 기록함 → 에셋 이름으로 취급하지 않음
+            info.error = info.name;
+            info.name.clear();
+        }
+        else if (info.name.empty() || info.name == "Unknown Asset") {
+            info.error = "에셋 제목 요소를 찾지 못함 (값: '" + info.name + "')";
+            info.name.clear();
+        }
+        else {
             cout << " - [Success] Captured Asset: " << info.name << endl;
             if (!info.imageUrl.empty()) cout << " - [Success] Image URL found." << endl;
             if (!info.endDate.empty()) cout << " - [Success] End Date: " << info.endDate << endl;
         }
         remove("temp_fab.txt");
     }
+    else {
+        info.error = "fetch_fab.py 결과 파일(temp_fab.txt)이 생성되지 않음 (Python 실행 실패 추정)";
+    }
     return info;
 }
 
 int main() {
-    // 설정 로드 (Bot Token & Channel ID)
+    // 설정 로드 (Bot Token & Channel ID, 선택: 상태 보고 웹훅 URL)
     ifstream configFile("config.txt");
-    string botToken, channelId;
+    string botToken, channelId, statusWebhook;
     if (!getline(configFile, botToken) || !getline(configFile, channelId)) {
         cout << "[Error] Invalid config.txt. Need Token on line 1 and Channel ID on line 2." << endl;
         return 1;
     }
+    botToken = Trim(botToken);
+    channelId = Trim(channelId);
+    // 3번째 줄은 선택 사항 (없거나 비어 있으면 상태 보고 생략)
+    if (getline(configFile, statusWebhook)) statusWebhook = Trim(statusWebhook);
+    if (statusWebhook.find("http") != 0) statusWebhook.clear();
     configFile.close();
 
     vector<StoreConfig> stores = {
@@ -369,27 +526,63 @@ int main() {
         { "Fab", "https://www.fab.com/ko/limited-time-free", "fab_source.html", "last_fab.txt", ParseFabAsset }
     };
 
+    vector<StoreResult> results;
+
     for (const auto& store : stores) {
         cout << "[" << store.storeName << "] Checking..." << endl;
-        AssetInfo current;
-        if (store.storeName == "Fab") current = store.parseFunc("");
-        else if (DownloadPageSource(store.url, store.tempFile)) current = store.parseFunc(store.tempFile);
+        StoreResult result;
+        result.storeName = store.storeName;
 
-        if (current.name.empty()) continue;
+        AssetInfo current;
+        string fetchDiag;
+        if (store.storeName == "Fab") {
+            current = store.parseFunc("");
+        }
+        else if (DownloadPageSource(store.url, store.tempFile, fetchDiag)) {
+            current = store.parseFunc(store.tempFile);
+        }
+        else {
+            current.error = "페이지 다운로드 실패";
+        }
+
+        if (current.name.empty()) {
+            if (current.error.empty()) current.error = "에셋 이름을 추출하지 못함 (원인 미상)";
+            cout << " - [Error] " << current.error << endl;
+            result.status = "FAIL";
+            result.detail = current.error;
+            if (!fetchDiag.empty()) result.detail += "\n" + fetchDiag;
+            results.push_back(result);
+            continue;
+        }
 
         string lastAssetName = "";
         ifstream fin(store.cacheFile);
         if (fin.is_open()) { getline(fin, lastAssetName); fin.close(); }
 
+        result.assetName = current.name;
+        if (!fetchDiag.empty()) result.detail = fetchDiag;
+
         if (current.name != lastAssetName) {
             cout << " - New Asset: " << current.name << endl;
-            SendAndPublishDiscord(botToken, channelId, current);
-            ofstream fout(store.cacheFile);
-            if (fout.is_open()) { fout << current.name; fout.close(); }
+            if (SendAndPublishDiscord(botToken, channelId, current)) {
+                result.status = "NEW";
+                if (!lastAssetName.empty()) result.detail += (result.detail.empty() ? "" : "\n") + string("이전: ") + lastAssetName;
+                // 전송에 성공했을 때만 캐시 갱신 (실패 시 다음 실행에서 재시도)
+                ofstream fout(store.cacheFile);
+                if (fout.is_open()) { fout << current.name; fout.close(); }
+            }
+            else {
+                result.status = "FAIL";
+                result.detail += (result.detail.empty() ? "" : "\n") + string("새 에셋을 찾았으나 디스코드 전송 실패 (다음 실행에서 재시도)");
+            }
         }
         else {
             cout << " - Up to date." << endl;
+            result.status = "SAME";
         }
+        results.push_back(result);
     }
+
+    SendStatusReport(statusWebhook, results);
     return 0;
 }
