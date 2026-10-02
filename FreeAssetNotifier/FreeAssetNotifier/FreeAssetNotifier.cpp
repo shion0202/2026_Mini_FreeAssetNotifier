@@ -153,7 +153,7 @@ void SendStatusReport(const string& webhookUrl, const vector<StoreResult>& resul
         }
 
         json embed = json::object();
-        embed["title"] = anyFail ? "⚠️ 무료 에셋 확인 결과 (실패 있음)" : "📋 무료 에셋 확인 결과";
+        embed["title"] = "기간 한정 무료 에셋 확인 결과";
         embed["description"] = GetKstNow();
         embed["color"] = anyFail ? 15158332 : 3066993;
         embed["fields"] = fields;
