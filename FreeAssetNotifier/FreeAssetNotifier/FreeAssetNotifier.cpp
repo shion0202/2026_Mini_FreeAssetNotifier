@@ -558,11 +558,19 @@ int main() {
         if (store.storeName == "Fab") {
             current = store.parseFunc("");
         }
-        else if (DownloadPageSource(store.url, store.tempFile, fetchDiag)) {
-            current = store.parseFunc(store.tempFile);
-        }
         else {
-            current.error = "페이지 다운로드 실패";
+            if (DownloadPageSource(store.url, store.tempFile, fetchDiag)) current = store.parseFunc(store.tempFile);
+            else current.error = "페이지 다운로드 실패";
+
+            // 무료 에셋 섹션이 정적 HTML에 없고 JS로 그려지는 날이 있음 → 브라우저로 렌더링해 재시도
+            if (current.name.empty()) {
+                cout << " - Retrying with headless browser..." << endl;
+                system("python fetch_unity.py");
+                AssetInfo retry = store.parseFunc(store.tempFile);
+                if (!retry.name.empty()) current = retry;
+                else current.error += " / 브라우저 재시도도 실패: " + retry.error;
+                fetchDiag += (fetchDiag.empty() ? "" : ", ") + string("브라우저 재시도함");
+            }
         }
 
         if (current.name.empty()) {
